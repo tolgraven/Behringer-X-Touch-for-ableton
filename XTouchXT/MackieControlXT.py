@@ -30,6 +30,7 @@ class MackieControlXT(object):
     def disconnect(self):
         for c in self.__components:
             c.destroy()
+        self._refresh_main_session_highlight()
 
     def connect_script_instances(self, instanciated_scripts):
         pass
@@ -153,6 +154,14 @@ class MackieControlXT(object):
 
         self.request_firmware_version()
         self._refresh_state_next_time = 30
+        self._refresh_main_session_highlight()
+
+    def _refresh_main_session_highlight(self):
+        if self._mackie_control_main != None:
+            try:
+                self._mackie_control_main.get_channel_strip_controller()._set_session_highlight()
+            except:
+                pass
 
     def request_rebuild_midi_map(self):
         self.__c_instance.request_rebuild_midi_map()

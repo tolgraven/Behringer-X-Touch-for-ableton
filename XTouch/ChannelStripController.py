@@ -147,6 +147,7 @@ class ChannelStripController(MackieControlComponent):
         self.__suppress_auto_banking = False
 
     def destroy(self):
+        self.main_script()._set_session_highlight(-1, -1, -1, -1, False)
         self.song().remove_visible_tracks_listener(self.__on_tracks_added_or_deleted)
         self.song().view.remove_selected_track_listener(self.__on_selected_track_changed)
         self.song().view.remove_selected_chain_listener(self.__on_selected_track_changed)
@@ -212,6 +213,7 @@ class ChannelStripController(MackieControlComponent):
             s.set_channel_strip_controller(self)
 
         self.refresh_state()
+        self.__update_session_highlight()
 
     def refresh_state(self):
         self.__assign_flip_and_master_button()
@@ -225,9 +227,7 @@ class ChannelStripController(MackieControlComponent):
         self.__on_flip_changed()
         self.__update_master_button_led()
         self.__update_view_returns_mode()
-        # if self.main_script().auto_banking:
-            # self._sync_banks_xtouch_to_live()
-        # self._set_session_highlight()
+        self.__update_session_highlight()
 
     def request_rebuild_midi_map(self):
         u""" Overridden to call also the extensions request_rebuild_midi_map"""
@@ -309,10 +309,7 @@ class ChannelStripController(MackieControlComponent):
 
     def _sync_banks_xtouch_to_live(self, override=False):
         if self.main_script().auto_banking or override:
-            offset = self.__strip_offset()
-            bank_size = len(self.__channel_strips)
-            self.main_script()._set_session_highlight(offset, 0, bank_size, 1, False) 
-            self.main_script()._set_session_highlight(-1, -1, -1, -1, False)
+            self.__update_session_highlight()
 
     def _sync_banks_live_to_xtouch(self, override=False):
         if not (self.main_script().auto_banking or override):
@@ -936,17 +933,23 @@ class ChannelStripController(MackieControlComponent):
         self.__reassign_channel_strip_parameters(for_display_only=False)
         self.__update_channel_strip_strings()
         self.request_rebuild_midi_map()
+        self.__update_session_highlight()
         if sync_banks:
             self._sync_banks_xtouch_to_live()
             # self._set_session_highlight()
 
     def _set_session_highlight(self):
-        offset = self.__strip_offset()
-        bank_size = len(self.__channel_strips)
-        if self.main_script().auto_banking:
-            self.main_script()._set_session_highlight(offset, 0, bank_size, 1, False)
+        self.__update_session_highlight()
+
+    def __update_session_highlight(self):
+        width = self.__session_highlight_width()
+        if width > 0 and self.__controlled_num_of_tracks() > 0:
+            self.main_script()._set_session_highlight(self.__strip_offset(), 0, width, 1, self.__view_returns)
         else:
             self.main_script()._set_session_highlight(-1, -1, -1, -1, False)
+
+    def __session_highlight_width(self):
+        return NUM_CHANNEL_STRIPS * (1 + len(self.__left_extensions) + len(self.__right_extensions))
 
     def __set_assignment_mode(self, mode, implicit=False):
         for plugin in self.__displayed_plugins:
@@ -1437,6 +1440,7 @@ class ChannelStripController(MackieControlComponent):
         self.__main_display_controller.set_show_return_track_names(self.__view_returns)
         self.__reassign_channel_strip_offsets()
         self.__reassign_channel_strip_parameters(for_display_only=False)
+        self.__update_session_highlight()
         self.request_rebuild_midi_map()
 
     def __attach_device_listeners(self, track):
@@ -1574,6 +1578,7 @@ class ChannelStripController(MackieControlComponent):
         self.__on_selected_track_changed()
         self.__main_display_controller.refresh_state()
         self.__within_track_added_or_deleted = False
+        self.__update_session_highlight()
         self.request_rebuild_midi_map()
 
     def __on_any_tracks_output_type_changed(self):
