@@ -3,6 +3,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 from __future__ import division
 from past.utils import old_div
 from .MackieControlComponent import *
+from .ClipScrubber import ClipScrubber, decode_mcu_delta
 import time
 
 class Transport(MackieControlComponent):
@@ -29,6 +30,13 @@ class Transport(MackieControlComponent):
         self._metronome_flash_ticks = 0
         self._last_beat = None
 
+        self._scrub_clutch_down = False
+        self._clip_scrubber = ClipScrubber(
+            self._selected_scrub_clip,
+            lambda: self.song().record_mode or self.song().session_record,
+            lambda message: self.main_script().time_display().show_priority_message(message, 1000),
+        )
+        self.song().view.add_detail_clip_listener(self._clip_scrubber.reset)
         self.__assign_mutable_buttons()
 
         """ Settings menu system """
@@ -49,6 +57,8 @@ class Transport(MackieControlComponent):
         self.refresh_state()
 
     def destroy(self):
+        self._clip_scrubber.reset()
+        self.song().view.remove_detail_clip_listener(self._clip_scrubber.reset)
         self.song().remove_record_mode_listener(self.__update_record_button_led)
         self.song().remove_is_playing_listener(self.__update_play_button_led)
         self.song().remove_loop_listener(self.__update_loop_button_led)
@@ -74,6 +84,8 @@ class Transport(MackieControlComponent):
         return self
 
     def refresh_state(self):
+        self._clip_scrubber.reset()
+        self._scrub_clutch_down = False
         self.__assign_mutable_buttons()
         self.__update_play_button_led()
         self.__update_record_button_led()
@@ -110,7 +122,30 @@ class Transport(MackieControlComponent):
     def selected_clip_slot(self):
         return self.song().view.highlighted_clip_slot
 
+    def _selected_scrub_clip(self):
+        clip = self.song().view.detail_clip
+        # Never scrub a stale, hidden Session slot while editing Arrangement.
+        if clip is None and self.session_is_visible():
+            slot = self.selected_clip_slot()
+            if slot and slot.has_clip:
+                clip = slot.clip
+        return clip
+
+    def _can_scrub_clip(self):
+        return (
+            not self._in_settings_menu
+            and (self._scrub_clutch_down or
+                 (self.__scrub_button_down and not self.session_is_visible()))
+            and not self.control_is_pressed()
+            and not self.option_is_pressed()
+            and (self.session_is_visible() or not self.__zoom_button_down)
+        )
+
     def on_update_display_timer(self):
+        if self._can_scrub_clip():
+            self._clip_scrubber.tick()
+        else:
+            self._clip_scrubber.reset()
         if self.__transport_repeat_delay > 2:
             if self.alt_is_pressed():
                 base_acceleration = 1
@@ -154,6 +189,8 @@ class Transport(MackieControlComponent):
 
 
     def handle_marker_switch_ids(self, switch_id, value):
+        if value == BUTTON_PRESSED:
+            self._clip_scrubber.reset()
         if switch_id == SID_TRANSPORT_MARKER:
             if value == BUTTON_PRESSED:
                 if self.control_is_pressed():
@@ -189,6 +226,11 @@ class Transport(MackieControlComponent):
 #                self.__goto_end()
 
     def handle_transport_switch_ids(self, switch_id, value):
+        if value == BUTTON_PRESSED and switch_id in (
+            SID_TRANSPORT_REWIND, SID_TRANSPORT_FAST_FORWARD,
+            SID_TRANSPORT_STOP, SID_TRANSPORT_PLAY, SID_TRANSPORT_RECORD,
+        ):
+            self._clip_scrubber.reset()
         if switch_id == SID_TRANSPORT_REWIND:
             if value == BUTTON_PRESSED:
                 self.__rewind()
@@ -228,6 +270,15 @@ class Transport(MackieControlComponent):
 
 
     def handle_jog_wheel_rotation(self, value):
+        if not decode_mcu_delta(value):
+            return
+        if self._can_scrub_clip():
+            # Use the raw magnitude: legacy seeking already scales its step.
+            self._clip_scrubber.move(
+                value, fine=self.alt_is_pressed(), coarse=self.shift_is_pressed()
+            )
+            return
+        self._clip_scrubber.reset()
         backwards = value >= 64
 
         if not self._in_settings_menu:
@@ -337,7 +388,18 @@ class Transport(MackieControlComponent):
 ##                        self.song().jump_by(step)
 
     def handle_jog_wheel_switch_ids(self, switch_id, value):
+        if switch_id == self.__scrub_button and value == BUTTON_RELEASED and self._scrub_clutch_down:
+            # Release must work even if Shift was released first.
+            self._scrub_clutch_down = False
+            self._clip_scrubber.reset()
+            self.__update_scrub_button_led()
+            return
         if not self._in_settings_menu:
+            if switch_id == self.__scrub_button and value == BUTTON_PRESSED and self.shift_is_pressed():
+                self._clip_scrubber.reset()
+                self._scrub_clutch_down = True
+                self.__update_scrub_button_led()
+                return
             if switch_id == SID_JOG_CURSOR_UP:
                 """ code for direct white cut-off control for hue color matching method, redundant now thanks to settings menu
                 if self.shift_is_pressed() and value == BUTTON_PRESSED and self.main_script().get_color_distance_mode() == True:
@@ -384,6 +446,10 @@ class Transport(MackieControlComponent):
                 if value == BUTTON_PRESSED:
                     if self.shift_is_pressed() and not self._in_settings_menu:
                         # Enter settings menu
+                        self._clip_scrubber.reset()
+                        self._scrub_clutch_down = False
+                        self.__scrub_button_down = False
+                        self.__update_scrub_button_led()
                         self._in_settings_menu = True
                         #self._menu_index = 0 # edited this out to have position in menu preserved after exiting and re-entering
                         self._show_current_menu_item()
@@ -406,6 +472,7 @@ class Transport(MackieControlComponent):
                         else:
                             self.song().view.selected_scene.fire_as_selected()
                     else:
+                        self._clip_scrubber.reset()
                         self.__scrub_button_down = not self.__scrub_button_down
     #                    self.song().back_to_arranger = 0
                         self.__update_scrub_button_led()
@@ -522,6 +589,10 @@ class Transport(MackieControlComponent):
         self.song().current_song_time = self.song().last_event_time
 
     def __on_session_is_visible_changed(self):
+        self._clip_scrubber.reset()
+        self._scrub_clutch_down = False
+        self.__scrub_button_down = False
+        self.__update_scrub_button_led()
         if not self.session_is_visible():
             self.__update_zoom_button_led()
 
@@ -575,13 +646,15 @@ class Transport(MackieControlComponent):
 #                self.send_button_led(self.__scrub_button, BUTTON_STATE_ON)
 #            else:
 #                self.send_button_led(self.__scrub_button, BUTTON_STATE_OFF)
-        if self.__scrub_button_down:
+        if self.__scrub_button_down or self._scrub_clutch_down:
             self.send_button_led(self.__scrub_button, BUTTON_STATE_ON)
         else:
             self.send_button_led(self.__scrub_button, BUTTON_STATE_OFF)
 
 
     def __update_play_button_led(self):
+        if not self.song().is_playing:
+            self._clip_scrubber.reset()
         if self.song().is_playing:
             self.send_button_led(SID_TRANSPORT_PLAY, BUTTON_STATE_ON)
             self.send_button_led(SID_TRANSPORT_STOP, BUTTON_STATE_OFF)
